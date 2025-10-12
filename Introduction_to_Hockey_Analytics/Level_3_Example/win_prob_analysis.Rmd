@@ -1,0 +1,223 @@
+---
+title: "Top Five Teams By WP"
+author: "Data Punk"
+date: "2025-09-02"
+output: html_document
+---
+
+License Information
+
+MIT License
+
+Copyright (c) 2024 Data Punk Media
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+ 
+# Load libraries for the script.
+
+```{r}
+
+library(tidyverse)
+library(dplyr)
+library(rvest)
+library(xml2)
+
+```
+
+# Scrape the data from Hockey-Reference.com. 
+
+```{r}
+
+url <- "https://www.hockey-reference.com/playoffs/NHL_2025.html"
+
+team_statistics <- url %>% 
+  read_html() %>% 
+  html_nodes(xpath = '//*[@id="teams"]') %>% 
+  html_table()
+
+winprob_statistics <- team_statistics[[1]]
+
+team_pwp_df <- as.data.frame(winprob_statistics)
+
+team_pwp_df <- team_pwp_df %>% 
+  filter(Team != "League Average")
+
+
+colnames(team_pwp_df) <- c("RANK", "TEAM", "GP", "W", "L", "T", "OW", "OL",
+                              "WL_PCT", "GF", "GA", "DIFF")
+
+print(team_pwp_df)
+
+```
+
+# Clean up the data and transform it. 
+
+```{r}
+
+team_abbr_lookup <- data.frame(
+  TEAM = c(
+    "Anaheim Ducks", "Arizona Coyotes", "Boston Bruins", "Buffalo Sabres",
+    "Calgary Flames", "Carolina Hurricanes", "Chicago Blackhawks", "Colorado Avalanche",
+    "Columbus Blue Jackets", "Dallas Stars", "Detroit Red Wings", "Edmonton Oilers",
+    "Florida Panthers", "Los Angeles Kings", "Minnesota Wild", "Montreal Canadiens",
+    "Nashville Predators", "New Jersey Devils", "New York Islanders", "New York Rangers",
+    "Ottawa Senators", "Philadelphia Flyers", "Pittsburgh Penguins", "San Jose Sharks",
+    "Seattle Kraken", "St. Louis Blues", "Tampa Bay Lightning", "Toronto Maple Leafs",
+    "Utah Hockey Club", "Vancouver Canucks", "Vegas Golden Knights", "Washington Capitals",
+    "Winnipeg Jets"
+  ),
+  TEAM_ABB = c(
+    "ANA", "ARI", "BOS", "BUF",
+    "CGY", "CAR", "CHI", "COL",
+    "CBJ", "DAL", "DET", "EDM",
+    "FLA", "LAK", "MIN", "MTL",
+    "NSH", "NJD", "NYI", "NYR",
+    "OTT", "PHI", "PIT", "SJS",
+    "SEA", "STL", "TBL", "TOR",
+    "UTA", "VAN", "VGK", "WSH",
+    "WPG"
+  ),
+  stringsAsFactors = FALSE
+)
+
+team_pwp_df <- team_pwp_df %>%
+  left_join(team_abbr_lookup, by = "TEAM")
+
+team_pwp_df$SEASON = "2024-2025"
+
+team_pwp_df$PWP = (team_pwp_df$GF^2)/(team_pwp_df$GF^2+team_pwp_df$GA^2)
+
+team_pwp_df <- team_pwp_df %>% 
+  select(SEASON, RANK, TEAM, TEAM_ABB, GP, W, L, T, OW, OL, WL_PCT, GF, GA,
+         DIFF, PWP)
+
+print(team_pwp_df)
+
+write.csv(team_pwp_df, "nhl_team_by_pwp.csv", row.names = FALSE)
+
+```
+
+# Trim the data to a smaller dataset.
+
+```{r}
+
+team_summary <- team_pwp_df %>% 
+  select(SEASON, TEAM_ABB, GF, GA, PWP)
+
+
+team_summary$PWP <- round(team_summary$PWP * 100, 2)
+
+print(team_summary)
+
+write.csv(team_summary, "trimmed_team_summary.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+
+cuts <- quantile(team_summary$PWP, probs = c(0, .25, .5, .75, 1), na.rm = TRUE, type = 7)
+cuts
+
+```
+
+
+```{r}
+
+team_summary <- team_summary %>%
+  mutate(BRACKET = cut(
+    PWP,
+    breaks = unique(cuts),
+    include.lowest = TRUE,
+    labels = c("4","3","2","1")
+  ))
+
+team_summary
+
+write.csv(team_summary, "team_summary_w_quartiles.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+filter_teams <- function(data, teams) {
+  data %>%
+    filter(TEAM_ABB %in% teams) %>%
+    select(TEAM_ABB, PWP)
+}
+
+result <- filter_teams(team_summary, c("EDM", "TOR"))
+
+
+write.csv(result, "matchup_results.csv", row.names = FALSE)
+
+print(result)
+
+```
+
+# Create a Head-to-Head prediction function. 
+
+```{r}
+
+head_to_head_prediction <- function(team1, team2, season) {
+  df1 <- team_summary %>% filter(TEAM_ABB == team1, SEASON == season)
+  df2 <- team_summary %>% filter(TEAM_ABB == team2, SEASON == season)
+  
+  if (nrow(df1) == 0 || nrow(df2) == 0) {
+    return("One or both teams not found.")
+  }
+  
+  pwp1 <- df1$PWP
+  pwp2 <- df2$PWP
+  
+  prob_team1_win <- pwp1 / (pwp1 + pwp2)
+  prob_team2_win <- pwp2 / (pwp1 + pwp2)
+  
+  cat("\n=== Head-to-Head Prediction ===\n")
+  cat("Season:", season, "\n")
+  cat(team1, "Win Probability:", sprintf("%.1f%%", 100 * prob_team1_win), "\n")
+  cat(team2, "Win Probability:", sprintf("%.1f%%", 100 * prob_team2_win), "\n")
+}
+
+```
+
+# Print out the head-to-head using 2 teams as input. 
+
+```{r}
+
+head_to_head_prediction("EDM", "TOR", "2024-2025")
+
+```
+
+
+
+
+
+
+
+
+
+
