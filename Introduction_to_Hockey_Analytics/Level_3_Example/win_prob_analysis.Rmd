@@ -47,6 +47,7 @@ library(xml2)
 
 ```
 
+
 # Scrape the data from Hockey-Reference.com. 
 
 ```{r}
